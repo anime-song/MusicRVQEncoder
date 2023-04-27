@@ -28,8 +28,7 @@ class VectorQuantizer(tf.keras.layers.Layer):
             name="embeddings",
             shape=(self.embedding_dim, self.codebook_size),
             initializer=tf.initializers.random_uniform(),
-            trainable=False,
-            use_resource=True)
+            trainable=True)
 
         self.ema_count = self.add_weight(
             name="ema_count",
@@ -65,8 +64,8 @@ class VectorQuantizer(tf.keras.layers.Layer):
         if training:
             updated_count = tf.reduce_sum(encodings, axis=0)
             updated_sum = tf.matmul(flat_inputs, encodings, transpose_a=True)
-            self.ema_count.assign((self.ema_count - updated_count) * self.ema_decay)
-            self.ema_sum.assign((self.ema_sum - updated_sum) * self.ema_decay)
+            self.ema_count.assign((1 - self.ema_decay) * self.ema_count + self.ema_decay * updated_count)
+            self.ema_sum.assign((1 - self.ema_decay) * self.ema_sum + self.ema_decay * updated_sum)
 
             n = tf.reduce_sum(self.ema_count)
             cluster_size = (self.ema_count + self.epsilon) / (n + self.codebook_size * self.epsilon) * n
