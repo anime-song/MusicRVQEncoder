@@ -162,5 +162,7 @@ cython_debug/
 # Dataset File
 *.mp3
 *.npz
+.jpg
 total_length_validate.txt
 total_length.txt
+!cqtPython.pyd

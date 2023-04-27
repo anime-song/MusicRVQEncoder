@@ -3,10 +3,11 @@ import numpy as np
 from tensorflow.keras import layers as L
 from tensorflow.keras import backend as K
 
-from config import MusicRVQEncoderConfig
+from config import MusicRVQAEConfig, MusicRVQLMConfig
 from encoder import Encoder, WeightNormDense
 from decoder import DecoderLayer
 from feature_extractor import FeatureExtractorLayer
+from vector_quantization import ResidualVQ
 
 
 class MixStripes(L.Layer):
@@ -129,8 +130,8 @@ class SpecMixAugmentation(L.Layer):
         return dict(list(config.items()))
     
 
-class MusicRVQEncoderModel(tf.keras.Model):
-    def __init__(self, config: MusicRVQEncoderConfig, batch_size, seq_len, **kwargs):
+class MusicRVQAE(tf.keras.Model):
+    def __init__(self, config: MusicRVQAEConfig, batch_size, seq_len, **kwargs):
         super().__init__(**kwargs)
         self.config = config
         self.batch_size = batch_size
@@ -141,27 +142,11 @@ class MusicRVQEncoderModel(tf.keras.Model):
                 filter_sizes=config.filter_sizes,
                 kernel_sizes=config.kernel_sizes,
                 strides=config.strides,
-                codebook_sizes=config.codebook_sizes,
-                commitment_costs=config.commitment_costs,
-                num_quantizers_list=config.num_quantizers_list,
                 is_gelu_approx=config.is_gelu_approx,
                 layer_id=i
             )
             for i in range(len(config.filter_sizes))
         ]
-
-        self.encoder = Encoder(
-            hidden_size=config.hidden_size,
-            num_heads=config.num_heads,
-            num_layers=config.num_layers,
-            intermediate_size=config.intermediate_size,
-            batch_size=batch_size,
-            patch_length=self.seq_len,
-            dropout=config.dropout,
-            layer_norm_eps=config.layer_norm_eps,
-            is_gelu_approx=config.is_gelu_approx,
-            attention_norm_type=config.attention_norm_type
-        )
 
         self.decoder_layers = [
             DecoderLayer(
@@ -173,7 +158,9 @@ class MusicRVQEncoderModel(tf.keras.Model):
             )
             for i in range(len(config.filter_sizes))
         ]
-        self.spec_augment = SpecMixAugmentation(3, 3, 0, 0, batch_size, self.seq_len)
+
+        self.encoded_seq_len = self.seq_len // np.prod(config.strides)
+        self.spec_augment = SpecMixAugmentation(3, 3, 0, 0, batch_size, self.encoded_seq_len)
         self.output_layer = WeightNormDense(252 * 2, kernel_initializer="he_normal")
 
     def call(self, inputs, attention_mask=None, training=False):
@@ -181,22 +168,69 @@ class MusicRVQEncoderModel(tf.keras.Model):
         inputs = tf.reshape(inputs, (self.batch_size, -1, 252 * 2))
 
         for feature_extractor_layer in self.feature_extract_layers:
-            inputs, quantized_output = feature_extractor_layer(inputs)
+            inputs = feature_extractor_layer(inputs, training=training)
 
-        # TODO: 3層以上重ねると学習が進まない
-        # inputs = self.spec_augment(inputs)
-        # inputs, attention_scores = self.encoder(quantized, training=training)
+        inputs = self.spec_augment(inputs, training=training)
 
         for decoder_layer in self.decoder_layers:
-            inputs = decoder_layer(inputs)
+            inputs = decoder_layer(inputs, training=training)
 
         outputs = self.output_layer(inputs)
         outputs = tf.reshape(outputs, (self.batch_size, -1, 2, 252))
         outputs = tf.transpose(outputs, (0, 1, 3, 2))
         outputs = tf.keras.activations.relu(outputs)
-
-        return outputs, quantized_output
+        return outputs
     
     def freeze_feature_extractor(self):
         for i in range(len(self.feature_extract_layers)):
             self.feature_extract_layers[i].trainable = False
+
+
+class MusicRVQLM(tf.keras.Model):
+    def __init__(self, rvq_ae: MusicRVQAE, config: MusicRVQLMConfig, batch_size, **kwargs):
+        super().__init__(**kwargs)
+        self.rvq_ae = rvq_ae
+        self.config = config
+        self.batch_size = batch_size
+
+        self.residual_vq = ResidualVQ(
+            codebook_size=config.codebook_size,
+            embedding_dim=config.hidden_size,
+            commitment_cost=config.commitment_cost,
+            num_quantizers=config.num_quantizers
+        )
+
+        self.encoder = Encoder(
+            hidden_size=config.hidden_size,
+            num_heads=config.num_heads,
+            num_layers=config.num_layers,
+            intermediate_size=config.intermediate_size,
+            batch_size=batch_size,
+            patch_length=self.rvq_ae.encoded_seq_len,
+            dropout=config.dropout,
+            layer_norm_eps=config.layer_norm_eps,
+            is_gelu_approx=config.is_gelu_approx,
+            attention_norm_type=config.attention_norm_type
+        )
+
+    def call(self, inputs, training=False):
+        inputs = tf.transpose(inputs, (0, 1, 3, 2))
+        inputs = tf.reshape(inputs, (self.batch_size, -1, 252 * 2))
+
+        for feature_extractor_layer in self.rvq_ae.feature_extract_layers:
+            inputs = feature_extractor_layer(inputs, training=training)
+
+        inputs = self.rvq_ae.spec_augment(inputs, training=training)
+        vq_output = self.residual_vq(inputs, training=training)
+        inputs = vq_output['quantized_out']
+
+        inputs, attention_scores = self.encoder(inputs, training=training)
+
+        for decoder_layer in self.rvq_ae.decoder_layers:
+            inputs = decoder_layer(inputs, training=training)
+        
+        outputs = self.rvq_ae.output_layer(inputs, training=training)
+        outputs = tf.reshape(outputs, (self.batch_size, -1, 2, 252))
+        outputs = tf.transpose(outputs, (0, 1, 3, 2))
+        outputs = tf.keras.activations.relu(outputs)
+        return outputs
