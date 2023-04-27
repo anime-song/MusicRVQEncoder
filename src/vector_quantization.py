@@ -15,7 +15,6 @@ class VectorQuantizer(tf.keras.layers.Layer):
             commitment_cost=0.25,
             ema_decay=0.8,
             epsilon=1e-6,
-            threshold_ema_dead_code=2,
             **kwargs):
         super().__init__(**kwargs)
         self.embedding_dim = embedding_dim
@@ -23,15 +22,14 @@ class VectorQuantizer(tf.keras.layers.Layer):
         self.commitment_cost = commitment_cost
         self.ema_decay = ema_decay
         self.epsilon = epsilon
-        self.threshold_ema_dead_code = threshold_ema_dead_code
 
     def build(self, input_shape):
         self.embeddings = self.add_weight(
             name="embeddings",
             shape=(self.embedding_dim, self.codebook_size),
-            initializer="random_normal",
-            trainable=True,
-            dtype="float32")
+            initializer=tf.initializers.random_uniform(),
+            trainable=False,
+            use_resource=True)
 
         self.ema_count = self.add_weight(
             name="ema_count",
@@ -74,28 +72,6 @@ class VectorQuantizer(tf.keras.layers.Layer):
             cluster_size = (self.ema_count + self.epsilon) / (n + self.codebook_size * self.epsilon) * n
             updated_embeddings = self.ema_sum / tf.reshape(cluster_size, [1, self.codebook_size])
 
-            # カウントが閾値以下のコードを現在のバッチからランダムに選ばれたベクトルで置き換える
-            dead_code_indices = tf.where(self.ema_count < self.threshold_ema_dead_code)
-            dead_code_indices = tf.reshape(dead_code_indices, (-1, 1))
-
-            dead_code_mask = tf.math.less(self.ema_count, self.threshold_ema_dead_code)
-            remaining_indices_mask = tf.math.logical_not(dead_code_mask)
-
-            remaining_indices = tf.boolean_mask(tf.range(0, self.codebook_size), remaining_indices_mask)
-            if tf.shape(remaining_indices)[0] > 0:
-                random_index = tf.random.uniform(
-                    (tf.shape(dead_code_indices)[0],),
-                    minval=0,
-                    maxval=tf.shape(remaining_indices)[0],
-                    dtype=tf.int32)
-                sampled_indices = tf.gather(remaining_indices, random_index)
-                random_vectors = tf.gather(flat_inputs, sampled_indices)
-                random_vectors = tf.reshape(random_vectors, (-1, self.embedding_dim))
-
-                updated_embeddings = tf.transpose(updated_embeddings)
-                updated_embeddings = tf.tensor_scatter_nd_update(updated_embeddings, dead_code_indices, random_vectors)
-                updated_embeddings = tf.transpose(updated_embeddings)
-
             self.embeddings.assign(updated_embeddings)
 
         self.add_loss(loss)
@@ -124,7 +100,6 @@ class VectorQuantizer(tf.keras.layers.Layer):
                 "commitment_cost": self.commitment_cost,
                 "ema_decay": self.ema_decay,
                 "epsilon": self.epsilon,
-                "threshold_ema_dead_code": self.threshold_ema_dead_code
             }
         )
         return config
