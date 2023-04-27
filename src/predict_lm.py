@@ -12,7 +12,7 @@ from preprocess import fft
 tf.config.set_visible_devices([], 'GPU')
 
 model_input = L.Input(shape=(None, 12 * 3 * 7, 2))
-music_rvq_ae = MusicRVQAE(config=MusicRVQAEConfig(), batch_size=1, seq_len=8182)
+music_rvq_ae = MusicRVQAE(config=MusicRVQAEConfig(), batch_size=1, seq_len=8192)
 music_rvq_ae_out = music_rvq_ae(model_input)
 music_rvq_ae_model = tf.keras.Model(inputs=[model_input], outputs=music_rvq_ae_out)
 music_rvq_ae_model.load_weights("./model/music_rvq_ae.h5")
