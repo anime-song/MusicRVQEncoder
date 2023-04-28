@@ -27,7 +27,7 @@ class VectorQuantizer(tf.keras.layers.Layer):
         self.embeddings = self.add_weight(
             name="embeddings",
             shape=(self.embedding_dim, self.codebook_size),
-            initializer=tf.initializers.random_uniform(),
+            initializer=tf.initializers.random_normal(),
             trainable=True)
 
         self.ema_count = self.add_weight(

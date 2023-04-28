@@ -206,19 +206,6 @@ class MusicRVQLM(tf.keras.Model):
             num_quantizers=config.num_quantizers
         )
 
-        self.encoder = Encoder(
-            hidden_size=config.hidden_size,
-            num_heads=config.num_heads,
-            num_layers=config.num_layers,
-            intermediate_size=config.intermediate_size,
-            batch_size=batch_size,
-            patch_length=self.rvq_ae.encoded_seq_len,
-            dropout=config.dropout,
-            layer_norm_eps=config.layer_norm_eps,
-            is_gelu_approx=config.is_gelu_approx,
-            attention_norm_type=config.attention_norm_type
-        )
-
     def call(self, inputs, training=False, return_scores=False):
         inputs = tf.transpose(inputs, (0, 1, 3, 2))
         inputs = tf.reshape(inputs, (self.batch_size, -1, 252 * 2))
@@ -230,8 +217,6 @@ class MusicRVQLM(tf.keras.Model):
         vq_output = self.residual_vq(inputs, training=training)
         inputs = vq_output['quantized_out']
 
-        inputs, attention_scores = self.encoder(inputs, training=training)
-
         for decoder_layer in self.rvq_ae.decoder_layers:
             inputs = decoder_layer(inputs, training=training)
         
@@ -241,6 +226,6 @@ class MusicRVQLM(tf.keras.Model):
         outputs = tf.keras.activations.relu(outputs)
 
         if return_scores:
-            return outputs, vq_output, attention_scores
+            return outputs, vq_output
         
         return outputs

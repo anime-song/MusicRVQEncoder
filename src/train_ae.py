@@ -1,7 +1,6 @@
 import logging
 import warnings
 import os
-import tensorflow_addons as tfa
 import tensorflow as tf
 from tensorflow.keras import layers as L
 from tensorflow.keras.callbacks import LearningRateScheduler
