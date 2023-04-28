@@ -17,8 +17,14 @@ music_rvq_ae_out = music_rvq_ae(model_input)
 music_rvq_ae_model = tf.keras.Model(inputs=[model_input], outputs=music_rvq_ae_out)
 music_rvq_ae_model.load_weights("./model/music_rvq_ae.h5")
 
-model = MusicRVQLM(music_rvq_ae, config=MusicRVQLMConfig(), batch_size=1)
-model_out = model(model_input)
+rvqlm_config = MusicRVQLMConfig()
+model = MusicRVQLM(music_rvq_ae, config=rvqlm_config, batch_size=1)
+model_out, vq_output = model(model_input, return_scores=True)
+model_out = [model_out]
+model_out.extend(vq_output['quantized_out'])
+model_out.extend(vq_output['quantized_list'])
+model_out.extend(vq_output['codebook_list'])
+
 model = tf.keras.Model(inputs=[model_input], outputs=model_out)
 model.load_weights("./model/music_rvq_lm.h5")
 
@@ -35,5 +41,13 @@ pred = model.predict(S)
 
 cv2.imwrite("./img/original_l.jpg", cv2.flip(fft.minmax(S[0][:, :, 0].transpose(1, 0)) * 255, 0))
 cv2.imwrite("./img/original_r.jpg", cv2.flip(fft.minmax(S[0][:, :, 1].transpose(1, 0)) * 255, 0))
-cv2.imwrite("./img/reconstract_l.jpg", cv2.flip(fft.minmax(pred[0][:, :, 0].transpose(1, 0)) * 255, 0))
-cv2.imwrite("./img/reconstract_r.jpg", cv2.flip(fft.minmax(pred[0][:, :, 1].transpose(1, 0)) * 255, 0))
+cv2.imwrite("./img/reconstract_l.jpg", cv2.flip(fft.minmax(pred[0][0][:, :, 0].transpose(1, 0)) * 255, 0))
+cv2.imwrite("./img/reconstract_r.jpg", cv2.flip(fft.minmax(pred[0][0][:, :, 1].transpose(1, 0)) * 255, 0))
+
+cv2.imwrite("./img/quantized.jpg", cv2.flip(fft.minmax(pred[1].transpose(1, 0)) * 255, 0))
+
+for i in range(rvqlm_config.num_quantizers):
+    cv2.imwrite("./img/quantized/quantized_imed_{}.jpg".format(i), cv2.flip(fft.minmax(pred[2 + i][0].transpose(1, 0)) * 255, 0))
+
+for i in range(rvqlm_config.num_quantizers):
+    cv2.imwrite("./img/codebook/codebook_layer_{}.jpg".format(i), cv2.flip(fft.minmax(pred[18 + i]) * 255, 0))
