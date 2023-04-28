@@ -1,6 +1,7 @@
 import logging
 import warnings
 import os
+import tensorflow_addons as tfa
 import tensorflow as tf
 from tensorflow.keras import layers as L
 from tensorflow.keras.callbacks import LearningRateScheduler
@@ -71,7 +72,7 @@ if __name__ == "__main__":
     model_name = "music_rvq_ae"
 
     epochs = 200
-    batch_size = 64
+    batch_size = 8
     patch_len = 2048
     cache_size = 100
     initial_epoch = 0

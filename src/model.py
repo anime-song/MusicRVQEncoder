@@ -142,6 +142,12 @@ class MusicRVQAE(tf.keras.Model):
                 filter_sizes=config.filter_sizes,
                 kernel_sizes=config.kernel_sizes,
                 strides=config.strides,
+                batch_size=batch_size,
+                num_heads=config.num_heads,
+                intermediate_size=config.intermediate_size,
+                layer_norm_eps=config.layer_norm_eps,
+                dropout=config.dropout,
+                attention_norm_type=config.attention_norm_type,
                 is_gelu_approx=config.is_gelu_approx,
                 layer_id=i
             )
@@ -213,7 +219,7 @@ class MusicRVQLM(tf.keras.Model):
             attention_norm_type=config.attention_norm_type
         )
 
-    def call(self, inputs, training=False):
+    def call(self, inputs, training=False, return_scores=False):
         inputs = tf.transpose(inputs, (0, 1, 3, 2))
         inputs = tf.reshape(inputs, (self.batch_size, -1, 252 * 2))
 
@@ -233,4 +239,8 @@ class MusicRVQLM(tf.keras.Model):
         outputs = tf.reshape(outputs, (self.batch_size, -1, 2, 252))
         outputs = tf.transpose(outputs, (0, 1, 3, 2))
         outputs = tf.keras.activations.relu(outputs)
+
+        if return_scores:
+            return outputs, vq_output, attention_scores
+        
         return outputs

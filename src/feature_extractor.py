@@ -1,6 +1,8 @@
 import tensorflow as tf
 from tensorflow.keras import layers as L
 
+from local_attention import LocalPositonalEncoding, LocalAttentionTransformer
+
 
 class FeatureExtractorLayer(tf.keras.layers.Layer):
     def __init__(
@@ -8,6 +10,12 @@ class FeatureExtractorLayer(tf.keras.layers.Layer):
         filter_sizes,
         kernel_sizes,
         strides,
+        batch_size,
+        num_heads,
+        intermediate_size,
+        layer_norm_eps,
+        dropout,
+        attention_norm_type,
         is_gelu_approx=False,
         layer_id=0,
         **kwargs
@@ -24,6 +32,25 @@ class FeatureExtractorLayer(tf.keras.layers.Layer):
         kernel_size = kernel_sizes[layer_id]
         stride = strides[layer_id]
 
+        self.pos_embed = LocalPositonalEncoding(
+            batch_size,
+            conv_dim,
+            32
+        )
+
+        self.attention = LocalAttentionTransformer(
+            conv_dim,
+            num_heads,
+            intermediate_size,
+            32,
+            batch_size,
+            None,
+            layer_norm_eps,
+            is_gelu_approx,
+            dropout,
+            attention_norm_type
+        )
+
         self.conv_layer = L.Conv1D(
             conv_dim,
             kernel_size,
@@ -34,6 +61,9 @@ class FeatureExtractorLayer(tf.keras.layers.Layer):
         )
 
     def call(self, inputs, training=False):
+        inputs = self.pos_embed(inputs)
+        inputs = self.attention(inputs)
+        
         inputs = self.conv_layer(inputs)
         inputs = tf.keras.activations.gelu(inputs, approximate=self.is_gelu_approx)
         return inputs
