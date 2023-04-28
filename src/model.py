@@ -203,7 +203,8 @@ class MusicRVQLM(tf.keras.Model):
             codebook_size=config.codebook_size,
             embedding_dim=config.hidden_size,
             commitment_cost=config.commitment_cost,
-            num_quantizers=config.num_quantizers
+            num_quantizers=config.num_quantizers,
+            batch_size=batch_size
         )
 
     def call(self, inputs, training=False, return_scores=False):

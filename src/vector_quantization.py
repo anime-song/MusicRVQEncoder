@@ -12,6 +12,7 @@ class VectorQuantizer(tf.keras.layers.Layer):
             self,
             embedding_dim,
             codebook_size,
+            batch_size,
             commitment_cost=0.25,
             ema_decay=0.8,
             epsilon=1e-6,
@@ -24,6 +25,7 @@ class VectorQuantizer(tf.keras.layers.Layer):
         self.ema_decay = ema_decay
         self.epsilon = epsilon
         self.threshold_ema_dead_code = threshold_ema_dead_code
+        self.batch_size = batch_size
 
     def build(self, input_shape):
         self.embeddings = self.add_weight(
@@ -136,6 +138,7 @@ class ResidualVQ(tf.keras.layers.Layer):
             embedding_dim,
             commitment_cost,
             num_quantizers,
+            batch_size,
             **kwargs):
         super().__init__(**kwargs)
         self.codebook_size = codebook_size
@@ -146,7 +149,8 @@ class ResidualVQ(tf.keras.layers.Layer):
             VectorQuantizer(
                 embedding_dim=embedding_dim,
                 codebook_size=codebook_size,
-                commitment_cost=commitment_cost)
+                commitment_cost=commitment_cost,
+                batch_size=batch_size)
             for i in range(num_quantizers)]
 
     def call(self, inputs, training=False):
