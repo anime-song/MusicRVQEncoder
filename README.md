@@ -14,8 +14,11 @@ python preprocess/convert_spectrogram.py
 ```
 
 # 学習済みモデル
-学習済みモデルの重みは後程公開します。
+学習済みオートエンコーダモデルの重み
 
+[music_rvq_ae.tar.gz](https://huggingface.co/anime-song/MusicRVQEncoder/resolve/main/music_rvq_ae.tar.gz)
+
+ベクトル量子化レイヤーを含むモデルの重みは後程公開します。
 
 # 訓練
 学習を安定させるためにオートエンコーダを初めに訓練します。
