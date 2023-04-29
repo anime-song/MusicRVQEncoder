@@ -18,6 +18,8 @@ python preprocess/convert_spectrogram.py
 
 [music_rvq_ae.tar.gz](https://huggingface.co/anime-song/MusicRVQEncoder/resolve/main/music_rvq_ae.tar.gz)
 
+上記をダウンロード、解凍しmodelフォルダー内に入れてください。
+
 ベクトル量子化レイヤーを含むモデルの重みは後程公開します。
 
 # 訓練
