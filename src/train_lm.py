@@ -36,22 +36,12 @@ def allocate_gpu_memory(gpu_number=0):
 def step_decay(epochs, lr=0.001):
     def wrap(epoch):
         learning_rate = lr
-        if epoch >= 100:
+        if epoch >= 50:
             learning_rate *= 0.1
-        if epoch >= 150:
+        if epoch >= 75:
             learning_rate *= 0.1
 
         return learning_rate
-    return wrap
-
-
-def masked_mse():
-    def wrap(y_true, y_pred):
-        y_true_boolean_mask = tf.not_equal(y_true[:, :, :, 0], -1)
-        y_true = tf.boolean_mask(y_true, y_true_boolean_mask)
-        y_pred = tf.boolean_mask(y_pred, y_true_boolean_mask)
-        return tf.keras.metrics.mean_squared_error(y_true, y_pred)
-    
     return wrap
 
 
@@ -80,8 +70,8 @@ if __name__ == "__main__":
 
     x_train, x_test = load_from_npz()
     
-    loss = masked_mse()
-    accuracy = maskbacc
+    loss = "mse"
+    accuracy = [maskbacc]
     monitor = 'val_loss'
 
     model_input = L.Input(shape=(None, 12 * 3 * 7, 2))

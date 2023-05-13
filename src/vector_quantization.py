@@ -1,4 +1,5 @@
 import tensorflow as tf
+from tensorflow.keras import backend as K
 
 
 class VectorQuantizer(tf.keras.layers.Layer):
@@ -13,63 +14,70 @@ class VectorQuantizer(tf.keras.layers.Layer):
             embedding_dim,
             codebook_size,
             batch_size,
-            commitment_cost=0.25,
-            ema_decay=0.8,
-            epsilon=1e-6,
+            ema_decay,
+            epsilon=1e-12,
+            commitment_cost=1.0,
             threshold_ema_dead_code=2,
             **kwargs):
         super().__init__(**kwargs)
         self.embedding_dim = embedding_dim
         self.codebook_size = codebook_size
-        self.commitment_cost = commitment_cost
+        self.batch_size = batch_size
         self.ema_decay = ema_decay
         self.epsilon = epsilon
+        self.commitment_cost = commitment_cost
         self.threshold_ema_dead_code = threshold_ema_dead_code
-        self.batch_size = batch_size
 
     def build(self, input_shape):
         self.embeddings = self.add_weight(
             name="embeddings",
             shape=(self.embedding_dim, self.codebook_size),
+            dtype=tf.float32,
             initializer=tf.initializers.random_normal(),
-            trainable=True)
+            trainable=False)
 
-        self.ema_count = self.add_weight(
-            name="ema_count",
+        self.ema_cluster_size = self.add_weight(
+            name="ema_cluster_size",
             shape=(self.codebook_size,),
             dtype=tf.float32,
             initializer='zeros',
-            aggregation=tf.VariableAggregation.MEAN,
-            trainable=False,
-            use_resource=True)
-        self.ema_sum = self.add_weight(
-            name="ema_sum",
+            trainable=False)
+        self.ema_w = self.add_weight(
+            name="ema_w",
             shape=(self.embedding_dim, self.codebook_size),
             dtype=tf.float32,
-            initializer='zeros',
-            aggregation=tf.VariableAggregation.MEAN,
-            trainable=False,
-            use_resource=True)
+            initializer=tf.initializers.Constant(self.embeddings.numpy()),
+            trainable=False)
         
     def expire_codes(self, batch_samples):
-        dead_codes = self.ema_count < self.threshold_ema_dead_code
+        if self.threshold_ema_dead_code <= 0.0:
+            return
+        
+        dead_codes = self.ema_cluster_size < self.threshold_ema_dead_code
+        indices_to_update = tf.where(dead_codes)
 
-        seq_len = tf.reduce_sum(tf.ones_like(batch_samples)[:, :, 0], axis=1)[0]
+        reshaped_samples = tf.reshape(batch_samples, (self.batch_size, -1, tf.shape(batch_samples)[-1]))
+        seq_len = tf.reduce_sum(tf.ones_like(reshaped_samples)[:, :, 0], axis=1)[0]
         seq_len = tf.cast(seq_len, tf.int32)
 
+        updated_embeddings = tf.transpose(self.embeddings)
         for i in range(self.batch_size):
-            samples = batch_samples[i]
-            sampled_indices = tf.random.uniform((self.codebook_size,), minval=0, maxval=seq_len, dtype=tf.int32)
+            samples = reshaped_samples[i]
+            if seq_len >= self.codebook_size:
+                sampled_indices = tf.random.shuffle(tf.range(seq_len))[:self.codebook_size]
+            else:
+                sampled_indices = tf.random.uniform((self.codebook_size,), minval=0, maxval=seq_len, dtype=tf.int32)
             sampled_vectors = tf.gather(samples, sampled_indices)
 
-            indices_to_update = tf.where(dead_codes)
-            vectors_to_update = tf.gather(sampled_vectors, tf.range(tf.shape(indices_to_update)[0]))
-
-            # 更新
-            updated_embeddings = tf.transpose(self.embeddings)
+            vectors_to_update = tf.gather(sampled_vectors, tf.range(tf.minimum(tf.shape(indices_to_update)[0], tf.shape(sampled_vectors)[0])))
             updated_embeddings = tf.tensor_scatter_nd_update(updated_embeddings, indices_to_update, vectors_to_update)
-            updated_embeddings = tf.transpose(updated_embeddings)
-            self.embeddings.assign(updated_embeddings)
+
+        updated_embeddings = tf.transpose(updated_embeddings)
+        self.embeddings.assign(updated_embeddings)
+
+        updated_ema_cluster_size = tf.where(dead_codes, tf.ones_like(self.ema_cluster_size) * self.threshold_ema_dead_code, self.ema_cluster_size)
+        self.ema_cluster_size.assign(updated_ema_cluster_size)
+        self.ema_w.assign(updated_embeddings * self.threshold_ema_dead_code)
 
     def call(self, inputs, training=False):
         flat_inputs = tf.reshape(inputs, [-1, self.embedding_dim])
@@ -79,28 +87,24 @@ class VectorQuantizer(tf.keras.layers.Layer):
         encoding_indices = tf.reshape(encoding_indices, tf.shape(inputs)[:-1])
         quantized = tf.nn.embedding_lookup(tf.transpose(self.embeddings, [1, 0]), encoding_indices)
 
-        e_latent_loss = tf.reduce_mean(tf.square(tf.stop_gradient(quantized) - inputs))
-        q_latent_loss = tf.reduce_mean(tf.square(quantized - tf.stop_gradient(inputs)))
-        loss = q_latent_loss + self.commitment_cost * e_latent_loss
-
-        quantized = inputs + tf.stop_gradient(quantized - inputs)
-
         if training:
-            updated_count = tf.reduce_sum(encodings, axis=0)
-            updated_sum = tf.matmul(flat_inputs, encodings, transpose_a=True)
-            self.ema_count.assign((1 - self.ema_decay) * self.ema_count + self.ema_decay * updated_count)
-            self.ema_sum.assign((1 - self.ema_decay) * self.ema_sum + self.ema_decay * updated_sum)
+            updated_ema_cluster_size = K.moving_average_update(self.ema_cluster_size, tf.reduce_sum(encodings, 0), self.ema_decay)
 
-            n = tf.reduce_sum(self.ema_count)
-            cluster_size = (self.ema_count + self.epsilon) / (n + self.codebook_size * self.epsilon) * n
-            updated_embeddings = self.ema_sum / tf.reshape(cluster_size, [1, self.codebook_size])
+            dw = tf.matmul(flat_inputs, encodings, transpose_a=True)
+            updated_ema_w = K.moving_average_update(self.ema_w, dw, self.ema_decay)
 
-            self.embeddings.assign(updated_embeddings)
-
+            n = tf.reduce_sum(updated_ema_cluster_size)
+            updated_ema_cluster_size = ((updated_ema_cluster_size + self.epsilon) / (n + self.codebook_size * self.epsilon) * n)
+            normalized_updated_ema_w = updated_ema_w / tf.reshape(updated_ema_cluster_size, [1, -1])
+            self.embeddings.assign(normalized_updated_ema_w)
+            
             self.expire_codes(inputs)
 
+        e_latent_loss = tf.reduce_mean((tf.stop_gradient(quantized) - inputs) ** 2)
+        loss = e_latent_loss * self.commitment_cost
+        quantized = inputs + tf.stop_gradient(quantized - inputs)
+
         self.add_loss(loss)
-        # self.add_metric(loss, name="vq_loss_" + self.name)
         return {
             "quantized": quantized,
             "encodings": encodings,
@@ -122,7 +126,6 @@ class VectorQuantizer(tf.keras.layers.Layer):
             {
                 "embedding_dim": self.embedding_dim,
                 "codebook_size": self.codebook_size,
-                "commitment_cost": self.commitment_cost,
                 "ema_decay": self.ema_decay,
                 "epsilon": self.epsilon,
                 "threshold_ema_dead_code": self.threshold_ema_dead_code
@@ -136,44 +139,42 @@ class ResidualVQ(tf.keras.layers.Layer):
             self,
             codebook_size,
             embedding_dim,
-            commitment_cost,
             num_quantizers,
             batch_size,
+            ema_decay,
+            threshold_ema_dead_code,
+            commitment_cost,
             **kwargs):
         super().__init__(**kwargs)
         self.codebook_size = codebook_size
         self.embedding_dim = embedding_dim
-        self.commitment_cost = commitment_cost
         self.num_quantizers = num_quantizers
+        self.batch_size = batch_size
         self.vq_layers = [
             VectorQuantizer(
                 embedding_dim=embedding_dim,
                 codebook_size=codebook_size,
-                commitment_cost=commitment_cost,
-                batch_size=batch_size)
+                batch_size=batch_size,
+                ema_decay=ema_decay,
+                threshold_ema_dead_code=threshold_ema_dead_code,
+                commitment_cost=commitment_cost)
             for i in range(num_quantizers)]
 
     def call(self, inputs, training=False):
         residual = inputs
         quantized_out = 0.
 
-        quantized_list = []
+        losses = []
         for layer in self.vq_layers:
             vq_output = layer(residual, training=training)
 
             residual = residual - tf.stop_gradient(vq_output['quantized'])
             quantized_out = quantized_out + vq_output['quantized']
-            quantized_list.append(vq_output['quantized'])
 
-        codebook_list = [
-            vq_layer.embeddings for vq_layer in self.vq_layers
-        ]
+            losses.extend(layer.losses)
 
-        return {
-            "quantized_out": quantized_out,
-            "quantized_list": quantized_list,
-            "codebook_list": codebook_list
-        }
+        self.add_metric(tf.math.reduce_sum(losses), name="residual_vq_commitment")
+        return quantized_out
 
     def get_config(self):
         config = super().get_config()
@@ -181,7 +182,6 @@ class ResidualVQ(tf.keras.layers.Layer):
             {
                 "codebook_size": self.codebook_size,
                 "embedding_dim": self.embedding_dim,
-                "commitment_cost": self.commitment_cost,
                 "num_quantizers": self.num_quantizers
             }
         )
