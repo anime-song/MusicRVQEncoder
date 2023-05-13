@@ -52,7 +52,7 @@ class DataLoader:
         for i in range(self.cache_size):
             idx = start_idx + i
             if idx >= len(self.files):
-                idx = len(self.files) - 2
+                idx = random.randint(0, len(self.files) - 2)
 
             data = (np.load(self.files[idx])["S"] / np.iinfo(np.uint16).max).astype("float32")
             cache[self.files[idx]] = [data, 0]
@@ -96,7 +96,7 @@ class DataLoader:
         x = spectrogram_data[:, start: start + self.seq_len]
 
         self.data_cache[file_name][-1] += self.seq_len
-        if self.data_cache[file_name][-1] >= n_frames:
+        if self.data_cache[file_name][-1] >= n_frames - self.seq_len:
             del self.data_cache[file_name]
 
         return x

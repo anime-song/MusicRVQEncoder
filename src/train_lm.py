@@ -70,7 +70,7 @@ if __name__ == "__main__":
 
     model_name = "music_rvq_lm"
 
-    epochs = 200
+    epochs = 100
     batch_size = 8
     patch_len = 2048
     cache_size = 100

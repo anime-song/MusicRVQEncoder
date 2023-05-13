@@ -1,6 +1,3 @@
-import logging
-import warnings
-import os
 import tensorflow as tf
 from tensorflow.keras import layers as L
 from tensorflow.keras.callbacks import LearningRateScheduler
@@ -8,15 +5,7 @@ from tensorflow.keras.callbacks import LearningRateScheduler
 from model import MusicRVQAE
 from util import DataGeneratorBatch, load_from_npz
 from config import MusicRVQAEConfig
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-warnings.simplefilter(action='ignore', category=FutureWarning)
-warnings.simplefilter(action='ignore', category=Warning)
 
-tf.get_logger().setLevel('INFO')
-tf.autograph.set_verbosity(0)
-
-tf.get_logger().setLevel(logging.ERROR)
-print(tf.__version__)
 
 def allocate_gpu_memory(gpu_number=0):
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
@@ -36,22 +25,12 @@ def allocate_gpu_memory(gpu_number=0):
 def step_decay(epochs, lr=0.001):
     def wrap(epoch):
         learning_rate = lr
-        if epoch >= 100:
+        if epoch >= 50:
             learning_rate *= 0.1
-        if epoch >= 150:
+        if epoch >= 75:
             learning_rate *= 0.1
 
         return learning_rate
-    return wrap
-
-
-def masked_mse():
-    def wrap(y_true, y_pred):
-        y_true_boolean_mask = tf.not_equal(y_true[:, :, :, 0], -1)
-        y_true = tf.boolean_mask(y_true, y_true_boolean_mask)
-        y_pred = tf.boolean_mask(y_pred, y_true_boolean_mask)
-        return tf.keras.metrics.mean_squared_error(y_true, y_pred)
-    
     return wrap
 
 
@@ -70,7 +49,7 @@ if __name__ == "__main__":
 
     model_name = "music_rvq_ae"
 
-    epochs = 200
+    epochs = 100
     batch_size = 8
     patch_len = 2048
     cache_size = 100
@@ -80,8 +59,8 @@ if __name__ == "__main__":
 
     x_train, x_test = load_from_npz()
     
-    loss = masked_mse()
-    accuracy = maskbacc
+    loss = "mse"
+    accuracy = [maskbacc]
     monitor = 'val_loss'
 
     model_input = L.Input(shape=(None, 12 * 3 * 7, 2))
