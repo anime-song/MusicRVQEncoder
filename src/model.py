@@ -213,7 +213,8 @@ class MusicRVQLM(tf.keras.Model):
             num_quantizers=config.num_quantizers,
             ema_decay=config.ema_decay,
             commitment_cost=config.commitment_cost,
-            threshold_ema_dead_code=config.threshold_ema_dead_code
+            threshold_ema_dead_code=config.threshold_ema_dead_code,
+            temperature=config.temperature
         )
 
     def call(self, inputs, training=False, return_scores=False, add_loss=True):

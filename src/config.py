@@ -38,3 +38,4 @@ class MusicRVQLMConfig:
     num_quantizers: int = 8
     ema_decay: float = 0.99
     threshold_ema_dead_code: int = 2
+    temperature = 1.0
