@@ -61,8 +61,8 @@ class FeatureExtractorLayer(tf.keras.layers.Layer):
         )
 
     def call(self, inputs, training=False):
-        inputs = self.pos_embed(inputs)
-        inputs = self.attention(inputs)
+        inputs = self.pos_embed(inputs, training=training)
+        inputs = self.attention(inputs, training=training)
         
         inputs = self.conv_layer(inputs)
         inputs = tf.keras.activations.gelu(inputs, approximate=self.is_gelu_approx)
