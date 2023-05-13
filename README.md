@@ -14,13 +14,11 @@ python preprocess/convert_spectrogram.py
 ```
 
 # 学習済みモデル
-オートエンコーダモデルは992.6hの音楽データで20epoch訓練されています。評価データでの精度はMSEで0.00042567です。
+オートエンコーダモデルは992.6hの音楽データで100epoch訓練されています。
 
-[学習済みオートエンコーダ重み](https://huggingface.co/anime-song/MusicRVQEncoder/resolve/main/music_rvq_ae.tar.gz)
+[学習済みオートエンコーダ重み](https://huggingface.co/anime-song/MusicRVQEncoder/resolve/main/music_rvq_ae.h5)
 
 上記をダウンロード、解凍しmodelフォルダー内に入れてください。
-
-ベクトル量子化レイヤーを含むモデルの重みは後程公開します。
 
 # 訓練
 学習を安定させるためにオートエンコーダを初めに訓練します。
