@@ -15,11 +15,13 @@ model_input = L.Input(shape=(None, 12 * 3 * 7, 2))
 music_rvq_ae = MusicRVQAE(config=MusicRVQAEConfig(), batch_size=1, seq_len=8192)
 music_rvq_ae_out = music_rvq_ae(model_input)
 music_rvq_ae_model = tf.keras.Model(inputs=[model_input], outputs=music_rvq_ae_out)
+music_rvq_ae.trainable = False
 
 rvqlm_config = MusicRVQLMConfig()
 model = MusicRVQLM(music_rvq_ae, config=rvqlm_config, batch_size=1)
-model_out = model(model_input, return_scores=True)
+model_out, attention_scores = model(model_input, return_scores=True, add_loss=False)
 model_out = [model_out]
+model_out.extend(attention_scores)
 
 model = tf.keras.Model(inputs=[model_input], outputs=model_out)
 model.load_weights("./model/music_rvq_lm.h5")
@@ -35,7 +37,8 @@ S = np.array([S[:8192]])
 
 pred = model.predict(S)
 
-cv2.imwrite("./img/original_l.jpg", cv2.flip(fft.minmax(S[0][:, :, 0].transpose(1, 0)) * 255, 0))
-cv2.imwrite("./img/original_r.jpg", cv2.flip(fft.minmax(S[0][:, :, 1].transpose(1, 0)) * 255, 0))
-cv2.imwrite("./img/reconstract_l.jpg", cv2.flip(fft.minmax(pred[0][0][:, :, 0].transpose(1, 0)) * 255, 0))
-cv2.imwrite("./img/reconstract_r.jpg", cv2.flip(fft.minmax(pred[0][0][:, :, 1].transpose(1, 0)) * 255, 0))
+for i in range(rvqlm_config.num_layers):
+    for j in range(rvqlm_config.num_heads):
+        layer = pred[1 + i][0][j, :, :].transpose(1, 0)
+        cv2.imwrite("./img/attentions/score_{}_{}.jpg".format(i, j), cv2.flip(fft.minmax(layer) * 255, 0))
+cv2.imwrite("./img/latent.jpg", cv2.flip(fft.minmax(pred[-1].transpose(1, 0)) * 255, 0))

@@ -2,6 +2,8 @@ import tensorflow as tf
 from tensorflow.keras import layers as L
 from tensorflow.keras import backend as K
 
+from vector_quantization import ResidualVQ
+
 
 class WeightNormDense(L.Dense):
     def build(self, input_shape):
@@ -167,10 +169,15 @@ class TransformerLayer(tf.keras.layers.Layer):
             name="final_layer_norm"
         )
 
+        self.conv_m_pointwise_conv = L.Conv1D(hidden_size, kernel_size=1, padding="same")
+        self.conv_m_batch_norm = L.BatchNormalization()
+        self.conv_m_depthwise_conv = L.DepthwiseConv1D(kernel_size=3, padding="same")
+        self.conv_m_dropout = L.Dropout(dropout)
+        self.conv_m_layer_norm = L.LayerNormalization(epsilon=layer_norm_eps)
+
     def call(self, inputs, attention_mask=None, training=False):
         # Attention
         residual = inputs
-        bt2_connection = inputs
         if self.attention_norm_type == "prenorm":
             inputs = self.layer_norm(inputs)
         inputs, scores = self.attention_layer(inputs, inputs, return_attention_scores=True, attention_mask=attention_mask, training=training)
@@ -179,6 +186,16 @@ class TransformerLayer(tf.keras.layers.Layer):
         if self.attention_norm_type == "postnorm":
             inputs = self.layer_norm(inputs)
 
+        # conv module
+        residual = inputs
+        inputs = self.conv_m_pointwise_conv(inputs)
+        inputs = tf.keras.activations.gelu(inputs, approximate=self.is_gelu_approx)
+        inputs = self.conv_m_depthwise_conv(inputs)
+        inputs = self.conv_m_batch_norm(inputs)
+        inputs = self.conv_m_dropout(inputs)
+        inputs = inputs + residual
+        inputs = self.conv_m_layer_norm(inputs)
+
         # FFN
         residual = inputs
         if self.attention_norm_type == "prenorm":
@@ -186,7 +203,6 @@ class TransformerLayer(tf.keras.layers.Layer):
         inputs = ReGLU()(self.intermediate(inputs))
         inputs = self.dropout(self.attention_output(inputs))
         inputs = inputs + residual
-        inputs = inputs + bt2_connection
         if self.attention_norm_type == "postnorm":
             inputs = self.final_layer_norm(inputs)
 
@@ -209,7 +225,7 @@ class TransformerLayer(tf.keras.layers.Layer):
         return config
 
 
-class Encoder(tf.keras.layers.Layer):
+class MaskedEncoder(tf.keras.layers.Layer):
     def __init__(
         self,
         hidden_size,
@@ -218,6 +234,13 @@ class Encoder(tf.keras.layers.Layer):
         intermediate_size,
         batch_size,
         patch_length,
+        codebook_size,
+        embedding_dim,
+        num_quantizers,
+        ema_decay,
+        commitment_cost,
+        threshold_ema_dead_code,
+        temperature,
         dropout=0.1,
         layer_norm_eps=1e-5,
         is_gelu_approx=False,
@@ -234,11 +257,12 @@ class Encoder(tf.keras.layers.Layer):
         self.layer_norm_eps = layer_norm_eps
         self.is_gelu_approx = is_gelu_approx
         self.attention_norm_type = attention_norm_type
+        self.temperature = temperature
 
         self.pos_embed = PositionalEncoding(
             hidden_size,
             batch_size,
-            max_shift_size=32,
+            max_shift_size=1024,
             patch_length=patch_length
         )
 
@@ -256,18 +280,47 @@ class Encoder(tf.keras.layers.Layer):
             for i in range(num_layers)
         ]
 
-    def call(self, inputs, attention_mask=None, training=False):
+        self.residual_vq = ResidualVQ(
+            codebook_size=codebook_size,
+            embedding_dim=embedding_dim,
+            num_quantizers=num_quantizers,
+            batch_size=batch_size,
+            ema_decay=ema_decay,
+            threshold_ema_dead_code=threshold_ema_dead_code,
+            commitment_cost=commitment_cost
+        )
+
+    def call(self, inputs, attention_mask=None, training=False, add_loss=True):
+        if add_loss:
+            quantized = self.residual_vq(inputs, training=training)
+            mask_index = tf.random.uniform(shape=(), minval=0, maxval=self.patch_length, dtype=tf.int32)
+            mask = tf.expand_dims(tf.expand_dims(tf.one_hot(mask_index, self.patch_length), axis=0), axis=-1)
+            inputs = inputs * (1 - mask)
+        
         inputs = self.pos_embed(inputs, training=training)
-        residual = inputs
         attention_scores = []
         for i, layer in enumerate(self.layers):
-            if i % 3 == 0:
-                inputs = inputs + residual
-                residual = inputs
             inputs, scores = layer(inputs, attention_mask=attention_mask, training=training)
             attention_scores.append(scores)
 
+        if add_loss:
+            loss = self.contrastive_loss(mask_index, inputs, quantized)
+            self.add_loss(loss)
+            self.add_metric(loss, name="context")
+
         return inputs, attention_scores
+    
+    def contrastive_loss(self, mask_index, context, quantized):
+        c_t = tf.expand_dims(context[:, mask_index, :], axis=1)
+        q_t = tf.expand_dims(quantized[:, mask_index, :], axis=1)
+
+        numerator = tf.exp(cosine_similarity(c_t, q_t) / self.temperature)
+        mask = tf.expand_dims(tf.one_hot(mask_index, self.patch_length), axis=0)
+        denominator = tf.reduce_sum(tf.exp(cosine_similarity(c_t, quantized) / self.temperature) * (1 - mask), axis=1)
+
+        loss = -tf.math.log(numerator / denominator)
+        
+        return tf.reduce_mean(loss)
     
     def get_config(self):
         config = super().get_config()
@@ -281,7 +334,14 @@ class Encoder(tf.keras.layers.Layer):
                 "layer_norm_eps": self.layer_norm_eps,
                 "is_gelu_approx": self.is_gelu_approx,
                 "attention_norm_type": self.attention_norm_type,
+                "temperature": self.temperature
             }
         )
         return config
     
+
+def cosine_similarity(a, b):
+    a_normalized = tf.nn.l2_normalize(a, axis=-1)
+    b_normalized = tf.nn.l2_normalize(b, axis=-1)
+    cosine_sim = a_normalized * b_normalized
+    return tf.reduce_sum(cosine_sim, axis=-1)

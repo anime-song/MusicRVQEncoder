@@ -4,10 +4,9 @@ from tensorflow.keras import layers as L
 from tensorflow.keras import backend as K
 
 from config import MusicRVQAEConfig, MusicRVQLMConfig
-from encoder import Encoder, WeightNormDense
+from encoder import MaskedEncoder, WeightNormDense
 from decoder import DecoderLayer
 from feature_extractor import FeatureExtractorLayer
-from vector_quantization import ResidualVQ
 
 
 class MixStripes(L.Layer):
@@ -199,31 +198,34 @@ class MusicRVQLM(tf.keras.Model):
         self.config = config
         self.batch_size = batch_size
 
-        self.residual_vq = ResidualVQ(
+        self.masked_encoder = MaskedEncoder(
+            config.hidden_size,
+            config.num_heads,
+            config.num_layers,
+            config.intermediate_size,
+            batch_size,
+            patch_length=rvq_ae.encoded_seq_len,
+            dropout=config.dropout,
+            layer_norm_eps=config.layer_norm_eps,
+            attention_norm_type=config.attention_norm_type,
             codebook_size=config.codebook_size,
-            embedding_dim=config.hidden_size,
-            commitment_cost=config.commitment_cost,
+            embedding_dim=config.embedding_dim,
             num_quantizers=config.num_quantizers,
-            batch_size=batch_size,
             ema_decay=config.ema_decay,
+            commitment_cost=config.commitment_cost,
             threshold_ema_dead_code=config.threshold_ema_dead_code
         )
 
-    def call(self, inputs, training=False, return_scores=False):
+    def call(self, inputs, training=False, return_scores=False, add_loss=True):
         inputs = tf.transpose(inputs, (0, 1, 3, 2))
         inputs = tf.reshape(inputs, (self.batch_size, -1, 252 * 2))
 
         for feature_extractor_layer in self.rvq_ae.feature_extract_layers:
             inputs = feature_extractor_layer(inputs, training=training)
 
-        inputs = self.residual_vq(inputs, training=training)
+        inputs, attention_scores = self.masked_encoder(inputs, training=training, add_loss=add_loss)
 
-        for decoder_layer in self.rvq_ae.decoder_layers:
-            inputs = decoder_layer(inputs, training=training)
-        
-        outputs = self.rvq_ae.output_layer(inputs, training=training)
-        outputs = tf.reshape(outputs, (self.batch_size, -1, 2, 252))
-        outputs = tf.transpose(outputs, (0, 1, 3, 2))
-        outputs = tf.keras.activations.relu(outputs)
-        
-        return outputs
+        if return_scores:
+            return inputs, attention_scores
+
+        return inputs

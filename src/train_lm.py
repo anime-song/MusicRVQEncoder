@@ -1,6 +1,3 @@
-import logging
-import warnings
-import os
 import tensorflow as tf
 from tensorflow.keras import layers as L
 from tensorflow.keras.callbacks import LearningRateScheduler
@@ -8,15 +5,7 @@ from tensorflow.keras.callbacks import LearningRateScheduler
 from model import MusicRVQAE, MusicRVQLM
 from util import DataGeneratorBatch, load_from_npz
 from config import MusicRVQAEConfig, MusicRVQLMConfig
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-warnings.simplefilter(action='ignore', category=FutureWarning)
-warnings.simplefilter(action='ignore', category=Warning)
 
-tf.get_logger().setLevel('INFO')
-tf.autograph.set_verbosity(0)
-
-tf.get_logger().setLevel(logging.ERROR)
-print(tf.__version__)
 
 def allocate_gpu_memory(gpu_number=0):
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
@@ -33,25 +22,50 @@ def allocate_gpu_memory(gpu_number=0):
         print("Not enough GPU hardware devices available")
 
 
-def step_decay(epochs, lr=0.001):
-    def wrap(epoch):
-        learning_rate = lr
-        if epoch >= 50:
-            learning_rate *= 0.1
-        if epoch >= 75:
-            learning_rate *= 0.1
-
-        return learning_rate
-    return wrap
+import numpy as np
+from tensorflow.keras import backend as K
 
 
-@tf.function
-def maskbacc(y_true, y_pred):
-    y_true_boolean_mask = tf.not_equal(y_true[:, :, :, 0], -1)
-    y_true = tf.boolean_mask(y_true, y_true_boolean_mask)
-    y_pred = tf.boolean_mask(y_pred, y_true_boolean_mask)
+def lr_warmup_cosine_decay(global_step,
+                           warmup_steps,
+                           hold = 0,
+                           total_steps=0,
+                           start_lr=0.0,
+                           target_lr=1e-3):
+    learning_rate = 0.5 * target_lr * (1 + np.cos(np.pi * (global_step - warmup_steps - hold) / float(total_steps - warmup_steps - hold)))
+    warmup_lr = target_lr * (global_step / warmup_steps)
+    if hold > 0:
+        learning_rate = np.where(global_step > warmup_steps + hold,
+                                 learning_rate, target_lr)
+    learning_rate = np.where(global_step < warmup_steps, warmup_lr, learning_rate)
+    return learning_rate
 
-    return tf.keras.metrics.categorical_accuracy(y_true, y_pred)
+
+class WarmupCosineDecay(tf.keras.callbacks.Callback):
+    def __init__(self, total_steps=0, warmup_steps=0, start_lr=0.0, target_lr=1e-3, hold=0, global_steps=0):
+
+        super(WarmupCosineDecay, self).__init__()
+        self.start_lr = start_lr
+        self.hold = hold
+        self.total_steps = total_steps
+        self.global_step = global_steps
+        self.target_lr = target_lr
+        self.warmup_steps = warmup_steps
+        self.lrs = []
+
+    def on_batch_end(self, batch, logs=None):
+        self.global_step = self.global_step + 1
+        lr = model.optimizer.lr.numpy()
+        self.lrs.append(lr)
+
+    def on_batch_begin(self, batch, logs=None):
+        lr = lr_warmup_cosine_decay(global_step=self.global_step,
+                                    total_steps=self.total_steps,
+                                    warmup_steps=self.warmup_steps,
+                                    start_lr=self.start_lr,
+                                    target_lr=self.target_lr,
+                                    hold=self.hold)
+        K.set_value(self.model.optimizer.lr, lr)
 
 
 if __name__ == "__main__":
@@ -70,8 +84,6 @@ if __name__ == "__main__":
 
     x_train, x_test = load_from_npz()
     
-    loss = "mse"
-    accuracy = [maskbacc]
     monitor = 'val_loss'
 
     model_input = L.Input(shape=(None, 12 * 3 * 7, 2))
@@ -79,19 +91,11 @@ if __name__ == "__main__":
     music_rvq_ae_out = music_rvq_ae(model_input)
     music_rvq_ae_model = tf.keras.Model(inputs=[model_input], outputs=music_rvq_ae_out)
     music_rvq_ae_model.load_weights("./model/music_rvq_ae.h5")
+    music_rvq_ae.trainable = False
 
     model = MusicRVQLM(music_rvq_ae, config=MusicRVQLMConfig(), batch_size=batch_size)
     model_out = model(model_input)
     model = tf.keras.Model(inputs=[model_input], outputs=model_out)
-
-    optimizer = tf.keras.optimizers.Adam()
-    lrs = LearningRateScheduler(step_decay(epochs))
-
-    model.compile(
-        optimizer,
-        loss,
-        metrics=accuracy)
-    model.summary()
 
     # ジェネレーター作成
     train_gen = DataGeneratorBatch(
@@ -121,11 +125,19 @@ if __name__ == "__main__":
         initial_value_threshold=initial_value_loss
     )
 
+    lrs = WarmupCosineDecay(
+        len(train_gen) * epochs, warmup_steps=len(train_gen) * epochs * 0.1, target_lr=1e-4, global_steps=len(train_gen) * initial_epoch)
+
     callbacks = [
         ckpt_callback_best,
         lrs,
         tensorboard_callback,
     ]
+
+    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+
+    model.compile(optimizer)
+    model.summary()
 
     history = model.fit(
         x=train_gen,
