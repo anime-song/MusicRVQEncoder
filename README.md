@@ -1,5 +1,5 @@
 # MusicRVQEncoder
-Residual-VQを使ったオートエンコーダ
+Residual-VQを使った音楽データのエンコーダ
 
 # 前提条件
 Python 3.9
@@ -13,36 +13,18 @@ Python 3.9
 python preprocess/convert_spectrogram.py
 ```
 
-# 学習済みモデル
-オートエンコーダモデルは992.6hの音楽データで20epoch訓練されています。評価データでの精度はMSEで0.00042567です。
-
-[学習済みオートエンコーダ重み](https://huggingface.co/anime-song/MusicRVQEncoder/resolve/main/music_rvq_ae.tar.gz)
-
-上記をダウンロード、解凍しmodelフォルダー内に入れてください。
-
-ベクトル量子化レイヤーを含むモデルの重みは後程公開します。
-
 # 訓練
-学習を安定させるためにオートエンコーダを初めに訓練します。
+学習を行うには以下を実行します。
 ```
-python train_ae.py
-```
-
-その後学習済みオートエンコーダを使用してベクトル量子化レイヤーを含むモデルを訓練します。
-```
-python train_lm.py
+python train_encoder.py
 ```
 
-パラメータなどは調整できるようにする予定です。
+学習はかなり不安定で高確率で出力が同じになる崩壊を起こします。
+target_lrを下げる、accum_stepsを上げる、データセットサイズを上げるなどで崩壊しないように調節できます。
 
 
 # 予測
-オートエンコーダの結果を確認するには以下を実行します。
+学習結果を確認するには以下を実行します。
 ```
-python predict_ae.py
-```
-
-量子化レイヤーを含むモデルの結果を確認するには以下を実行します。
-```
-python predict_lm.py
+python predict_encoder.py
 ```

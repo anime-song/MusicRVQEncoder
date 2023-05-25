@@ -1,5 +1,4 @@
 import tensorflow as tf
-from tensorflow.keras import layers as L
 
 from local_attention import LocalPositonalEncoding, LocalAttentionTransformer
 
@@ -35,14 +34,14 @@ class FeatureExtractorLayer(tf.keras.layers.Layer):
         self.pos_embed = LocalPositonalEncoding(
             batch_size,
             conv_dim,
-            32
+            8
         )
 
         self.attention = LocalAttentionTransformer(
             conv_dim,
             num_heads,
             intermediate_size,
-            32,
+            8,
             batch_size,
             None,
             layer_norm_eps,
@@ -51,7 +50,7 @@ class FeatureExtractorLayer(tf.keras.layers.Layer):
             attention_norm_type
         )
 
-        self.conv_layer = L.Conv1D(
+        self.conv_layer = tf.keras.layers.Conv1D(
             conv_dim,
             kernel_size,
             strides=stride,

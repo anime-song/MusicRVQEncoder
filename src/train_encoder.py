@@ -1,10 +1,10 @@
+import numpy as np
 import tensorflow as tf
-from tensorflow.keras import layers as L
-from tensorflow.keras.callbacks import LearningRateScheduler
+from gradient_accumulator import GradientAccumulateModel
 
-from model import MusicRVQAE, MusicRVQLM
+from model import MusicRVQEncoder
 from util import DataGeneratorBatch, load_from_npz
-from config import MusicRVQAEConfig, MusicRVQLMConfig
+from config import MusicRVQEncoderConfig
 
 
 def allocate_gpu_memory(gpu_number=0):
@@ -20,10 +20,6 @@ def allocate_gpu_memory(gpu_number=0):
             print(e)
     else:
         print("Not enough GPU hardware devices available")
-
-
-import numpy as np
-from tensorflow.keras import backend as K
 
 
 def lr_warmup_cosine_decay(global_step,
@@ -55,7 +51,7 @@ class WarmupCosineDecay(tf.keras.callbacks.Callback):
 
     def on_batch_end(self, batch, logs=None):
         self.global_step = self.global_step + 1
-        lr = model.optimizer.lr.numpy()
+        lr = self.model.optimizer.lr.numpy()
         self.lrs.append(lr)
 
     def on_batch_begin(self, batch, logs=None):
@@ -65,37 +61,38 @@ class WarmupCosineDecay(tf.keras.callbacks.Callback):
                                     start_lr=self.start_lr,
                                     target_lr=self.target_lr,
                                     hold=self.hold)
-        K.set_value(self.model.optimizer.lr, lr)
+        tf.keras.backend.set_value(self.model.optimizer.lr, lr)
 
 
 if __name__ == "__main__":
     # GPUメモリ制限
     allocate_gpu_memory()
 
-    model_name = "music_rvq_lm"
+    model_name = "music_rvq_encoder"
 
     epochs = 100
     batch_size = 8
+    accum_steps = 256
     patch_len = 2048
     cache_size = 100
     initial_epoch = 0
     initial_value_loss = None
-    log_dir = "./logs/music_rvq_lm"
+    log_dir = "./logs/music_rvq_encoder"
 
     x_train, x_test = load_from_npz()
-    
     monitor = 'val_loss'
 
-    model_input = L.Input(shape=(None, 12 * 3 * 7, 2))
-    music_rvq_ae = MusicRVQAE(config=MusicRVQAEConfig(), batch_size=batch_size, seq_len=patch_len)
-    music_rvq_ae_out = music_rvq_ae(model_input)
-    music_rvq_ae_model = tf.keras.Model(inputs=[model_input], outputs=music_rvq_ae_out)
-    music_rvq_ae_model.load_weights("./model/music_rvq_ae.h5")
-    music_rvq_ae.trainable = False
+    model_input = tf.keras.layers.Input(shape=(None, 12 * 3 * 7, 2))
+    ae_config = MusicRVQEncoderConfig()
+    music_rvq_encoder = MusicRVQEncoder(config=ae_config, batch_size=batch_size, seq_len=patch_len)
+    music_rvq_ae_out = music_rvq_encoder(model_input)
+    model = tf.keras.Model(inputs=[model_input], outputs=music_rvq_ae_out)
 
-    model = MusicRVQLM(music_rvq_ae, config=MusicRVQLMConfig(), batch_size=batch_size)
-    model_out = model(model_input)
-    model = tf.keras.Model(inputs=[model_input], outputs=model_out)
+    model = GradientAccumulateModel(accum_steps=accum_steps, inputs=model.inputs, outputs=model.outputs)
+    optimizer = tf.keras.optimizers.Adam()
+
+    model.compile(optimizer)
+    model.summary()
 
     # ジェネレーター作成
     train_gen = DataGeneratorBatch(
@@ -117,27 +114,22 @@ if __name__ == "__main__":
         log_dir=log_dir, histogram_freq=1)
 
     ckpt_callback_best = tf.keras.callbacks.ModelCheckpoint(
-        filepath="./model/{}.h5".format(model_name),
+        filepath="./model/{}.ckpt".format(model_name),
         monitor=monitor,
         verbose=1,
         save_best_only=True,
         save_weights_only=True,
         initial_value_threshold=initial_value_loss
     )
-
+    
     lrs = WarmupCosineDecay(
-        len(train_gen) * epochs, warmup_steps=len(train_gen) * epochs * 0.1, target_lr=1e-4, global_steps=len(train_gen) * initial_epoch)
+        len(train_gen) * epochs, warmup_steps=len(train_gen) * epochs * 0.2, target_lr=1e-4, global_steps=len(train_gen) * initial_epoch)
 
     callbacks = [
         ckpt_callback_best,
         lrs,
         tensorboard_callback,
     ]
-
-    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
-
-    model.compile(optimizer)
-    model.summary()
 
     history = model.fit(
         x=train_gen,

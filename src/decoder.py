@@ -1,5 +1,4 @@
 import tensorflow as tf
-from tensorflow.keras import layers as L
 
 
 class DecoderLayer(tf.keras.layers.Layer):
@@ -24,12 +23,12 @@ class DecoderLayer(tf.keras.layers.Layer):
         kernel_size = kernel_sizes[layer_id]
         stride = strides[layer_id]
 
-        self.smooth = L.GRU(
+        self.smooth = tf.keras.layers.GRU(
             conv_dim,
             return_sequences=True
         )
 
-        self.conv_layer = L.Conv1DTranspose(
+        self.conv_layer = tf.keras.layers.Conv1DTranspose(
             conv_dim,
             kernel_size,
             strides=stride,

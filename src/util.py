@@ -90,13 +90,16 @@ class DataLoader:
         file_name, data = random.choice(list(self.data_cache.items()))
         spectrogram_data = data[0]
         n_frames = spectrogram_data.shape[1]
-
-        start = self.data_cache[file_name][-1]
+        
+        if n_frames <= self.seq_len:
+            start = 0
+        else:
+            start = np.random.randint(0, n_frames - self.seq_len)
         
         x = spectrogram_data[:, start: start + self.seq_len]
 
         self.data_cache[file_name][-1] += self.seq_len
-        if self.data_cache[file_name][-1] >= n_frames - self.seq_len:
+        if self.data_cache[file_name][-1] > n_frames - self.seq_len:
             del self.data_cache[file_name]
 
         return x
@@ -163,7 +166,7 @@ class DataGeneratorBatch(Sequence):
              self.patch_length,
              252,
              2),
-            -1,
+            0,
             dtype="float32")
 
         for batch in range(self.batch_size):

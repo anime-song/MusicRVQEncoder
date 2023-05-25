@@ -1,7 +1,6 @@
 import tensorflow as tf
-from tensorflow.keras import layers as L
 
-from encoder import ReGLU, WeightNormDense
+from model_utils import ReGLU, WeightNormDense
 
 
 def get_relative_positions_matrix(length, max_relative_position):
@@ -31,6 +30,7 @@ def get_relative_positions_embeddings(length, max_relative_position, d_k):
     return positions_embeddings
 
 
+@tf.function
 def sliding_chunks_no_overlap_matmul_qk(q, k, batch_size, window_size):
     _, _, num_heads, head_dim = list(q.shape)
     # chunk seqlen into non-overlapping chunks of size w
@@ -45,6 +45,7 @@ def sliding_chunks_no_overlap_matmul_qk(q, k, batch_size, window_size):
     return tf.reshape(diagonal_attn, [batch_size, -1, num_heads, 3 * window_size])
 
 
+@tf.function
 def sliding_chunks_no_overlap_matmul_pv(prob, v, batch_size, window_size):
     _, _, num_heads, head_dim = list(v.shape)
     chunk_prob = tf.reshape(prob, [batch_size, -1, window_size, num_heads, 3, window_size])
@@ -69,7 +70,7 @@ class SlidingWindowAttentionNoOverlap(tf.keras.layers.Layer):
         batch_size = self.batch_size
         if not training:
             batch_size = tf.shape(query)[0]
-
+        
         attention = sliding_chunks_no_overlap_matmul_qk(query, key, batch_size=batch_size, window_size=self.window_size)
         attention = self.dropout(tf.keras.activations.softmax(attention, axis=-1), training=training)
         
@@ -135,7 +136,7 @@ class MultiHeadWindowAttention(tf.keras.layers.Layer):
         return dict(list(base_config.items()) + list(config.items()))
     
 
-class LocalAttentionTransformer(L.Layer):
+class LocalAttentionTransformer(tf.keras.layers.Layer):
     def __init__(self,
                  embed_dim,
                  num_heads,
@@ -165,14 +166,14 @@ class LocalAttentionTransformer(L.Layer):
             droprate=rate)
         self.ffn = WeightNormDense(ff_dim, kernel_initializer="he_normal")
         self.ffn_out = WeightNormDense(embed_dim, kernel_initializer="he_normal")
-        self.layernorm1 = L.LayerNormalization(epsilon=layer_norm_eps)
-        self.layernorm2 = L.LayerNormalization(epsilon=layer_norm_eps)
-        self.dropout1 = L.Dropout(rate)
-        self.dropout2 = L.Dropout(rate)
+        self.layernorm1 = tf.keras.layers.LayerNormalization(epsilon=layer_norm_eps)
+        self.layernorm2 = tf.keras.layers.LayerNormalization(epsilon=layer_norm_eps)
+        self.dropout1 = tf.keras.layers.Dropout(rate)
+        self.dropout2 = tf.keras.layers.Dropout(rate)
 
     def call(self, inputs, mask=None, training=False):
         residual = inputs
-        b2_residual = inputs
+        b2_connection = inputs
         if self.attention_norm_type == "prenorm":
             inputs = self.layernorm1(inputs)
         inputs, _ = self.attention_layer(inputs, inputs, training=training)
@@ -189,7 +190,7 @@ class LocalAttentionTransformer(L.Layer):
         inputs = ReGLU()(inputs)
         inputs = self.ffn_out(inputs)
         inputs = self.dropout2(inputs, training=training)
-        inputs = inputs + residual + b2_residual
+        inputs = inputs + residual + b2_connection
         if self.attention_norm_type == "postnorm":
             inputs = self.layernorm2(inputs)
 
@@ -207,7 +208,7 @@ class LocalAttentionTransformer(L.Layer):
         return dict(list(base_config.items()) + list(config.items()))
     
 
-class LocalPositonalEncoding(L.Layer):
+class LocalPositonalEncoding(tf.keras.layers.Layer):
     def __init__(self, batch_dim, feature_size, window_size, **kwargs):
         super(LocalPositonalEncoding, self).__init__(**kwargs)
         self.window_size = window_size

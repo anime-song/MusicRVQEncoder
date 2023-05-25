@@ -1,15 +1,12 @@
 import tensorflow as tf
 import numpy as np
-from tensorflow.keras import layers as L
-from tensorflow.keras import backend as K
 
-from config import MusicRVQAEConfig, MusicRVQLMConfig
-from encoder import MaskedEncoder, WeightNormDense
-from decoder import DecoderLayer
+from config import MusicRVQEncoderConfig
+from encoder import MaskedEncoder
 from feature_extractor import FeatureExtractorLayer
 
 
-class MixStripes(L.Layer):
+class MixStripes(tf.keras.layers.Layer):
     def __init__(
             self,
             dim,
@@ -36,7 +33,7 @@ class MixStripes(L.Layer):
         if self.dim == 1:
             total_width = self.time_steps
         elif self.dim == 2:
-            total_width = K.int_shape(inputs)[-1]
+            total_width = tf.keras.backend.int_shape(inputs)[-1]
 
         ind = tf.constant(0)
         v1 = tf.TensorArray(dtype=inputs.dtype, size=0, dynamic_size=True)
@@ -61,9 +58,9 @@ class MixStripes(L.Layer):
         # r: (time_steps, freqs)
 
         x_range = tf.range(time_steps)[:, tf.newaxis]
-        y_range = tf.range(K.int_shape(e)[-1])[tf.newaxis, :]
+        y_range = tf.range(tf.keras.backend.int_shape(e)[-1])[tf.newaxis, :]
 
-        mask = tf.zeros([time_steps, K.int_shape(e)[-1]], dtype=tf.bool)
+        mask = tf.zeros([time_steps, tf.keras.backend.int_shape(e)[-1]], dtype=tf.bool)
 
         for _ in range(self.stripes_num):
             distance = self.mix_width
@@ -92,7 +89,7 @@ class MixStripes(L.Layer):
         return dict(list(config.items()))
 
 
-class SpecMixAugmentation(L.Layer):
+class SpecMixAugmentation(tf.keras.layers.Layer):
     def __init__(self,
                  time_mix_width,
                  time_stripes_num,
@@ -129,8 +126,8 @@ class SpecMixAugmentation(L.Layer):
         return dict(list(config.items()))
     
 
-class MusicRVQAE(tf.keras.Model):
-    def __init__(self, config: MusicRVQAEConfig, batch_size, seq_len, **kwargs):
+class MusicRVQEncoder(tf.keras.Model):
+    def __init__(self, config: MusicRVQEncoderConfig, batch_size, seq_len, **kwargs):
         super().__init__(**kwargs)
         self.config = config
         self.batch_size = batch_size
@@ -153,80 +150,42 @@ class MusicRVQAE(tf.keras.Model):
             for i in range(len(config.filter_sizes))
         ]
 
-        self.decoder_layers = [
-            DecoderLayer(
-                filter_sizes=config.filter_sizes,
-                kernel_sizes=config.kernel_sizes,
-                strides=config.strides,
-                is_gelu_approx=config.is_gelu_approx,
-                layer_id=i
-            )
-            for i in range(len(config.filter_sizes))
-        ]
-
-        self.encoded_seq_len = self.seq_len // np.prod(config.strides)
-        self.spec_augment = SpecMixAugmentation(3, 3, 0, 0, batch_size, self.encoded_seq_len)
-        self.output_layer = WeightNormDense(252 * 2, kernel_initializer="he_normal")
-
-    def call(self, inputs, attention_mask=None, training=False):
-        inputs = tf.transpose(inputs, (0, 1, 3, 2))
-        inputs = tf.reshape(inputs, (self.batch_size, -1, 252 * 2))
-
-        for feature_extractor_layer in self.feature_extract_layers:
-            inputs = feature_extractor_layer(inputs, training=training)
-
-        inputs = self.spec_augment(inputs, training=training)
-
-        for decoder_layer in self.decoder_layers:
-            inputs = decoder_layer(inputs, training=training)
-
-        outputs = self.output_layer(inputs)
-        outputs = tf.reshape(outputs, (self.batch_size, -1, 2, 252))
-        outputs = tf.transpose(outputs, (0, 1, 3, 2))
-        outputs = tf.keras.activations.relu(outputs)
-        return outputs
-    
-    def freeze_feature_extractor(self):
-        for i in range(len(self.feature_extract_layers)):
-            self.feature_extract_layers[i].trainable = False
-
-
-class MusicRVQLM(tf.keras.Model):
-    def __init__(self, rvq_ae: MusicRVQAE, config: MusicRVQLMConfig, batch_size, **kwargs):
-        super().__init__(**kwargs)
-        self.rvq_ae = rvq_ae
-        self.config = config
-        self.batch_size = batch_size
-
         self.masked_encoder = MaskedEncoder(
-            config.hidden_size,
-            config.num_heads,
-            config.num_layers,
-            config.intermediate_size,
-            batch_size,
-            patch_length=rvq_ae.encoded_seq_len,
-            dropout=config.dropout,
-            layer_norm_eps=config.layer_norm_eps,
-            attention_norm_type=config.attention_norm_type,
+            hidden_size=config.hidden_size,
+            num_heads=config.num_heads,
+            num_layers=config.num_layers,
+            intermediate_size=config.intermediate_size,
+            batch_size=batch_size,
+            patch_length=self.seq_len // np.prod(config.strides),
             codebook_size=config.codebook_size,
             embedding_dim=config.embedding_dim,
             num_quantizers=config.num_quantizers,
             ema_decay=config.ema_decay,
             commitment_cost=config.commitment_cost,
             threshold_ema_dead_code=config.threshold_ema_dead_code,
-            temperature=config.temperature
+            sample_codebook_temperature=config.sample_codebook_temperature,
+            dropout=config.dropout,
+            layer_norm_eps=config.layer_norm_eps,
+            is_gelu_approx=config.is_gelu_approx,
+            attention_norm_type=config.attention_norm_type,
+            temperature=config.temperature,
+            use_quantizer=config.use_quantizer
         )
 
-    def call(self, inputs, training=False, return_scores=False, add_loss=True):
+    def call(self, inputs, attention_mask=None, training=False, return_attention_scores=False, add_loss=True):
         inputs = tf.transpose(inputs, (0, 1, 3, 2))
         inputs = tf.reshape(inputs, (self.batch_size, -1, 252 * 2))
 
-        for feature_extractor_layer in self.rvq_ae.feature_extract_layers:
+        for feature_extractor_layer in self.feature_extract_layers:
             inputs = feature_extractor_layer(inputs, training=training)
 
-        inputs, attention_scores = self.masked_encoder(inputs, training=training, add_loss=add_loss)
+        outputs, attention_scores = self.masked_encoder(inputs, training=training, add_loss=add_loss)
 
-        if return_scores:
-            return inputs, attention_scores
+        if return_attention_scores:
+            return outputs, attention_scores
 
-        return inputs
+        return outputs
+    
+    def freeze_feature_extractor(self):
+        for i in range(len(self.feature_extract_layers)):
+            self.feature_extract_layers[i].trainable = False
