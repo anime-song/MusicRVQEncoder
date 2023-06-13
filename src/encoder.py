@@ -92,6 +92,7 @@ class TransformerLayer(tf.keras.layers.Layer):
         self.is_gelu_approx = is_gelu_approx
         self.dropout = dropout
         self.attention_norm_type = attention_norm_type
+        self.causal = causal
 
         self.attention_layer = tf.keras.layers.MultiHeadAttention(
             num_heads=num_heads,
@@ -120,7 +121,12 @@ class TransformerLayer(tf.keras.layers.Layer):
         b2_connection = inputs
         if self.attention_norm_type == "prenorm":
             inputs = self.layer_norm(inputs)
-        inputs, scores = self.attention_layer(inputs, inputs, return_attention_scores=True, attention_mask=attention_mask, training=training)
+        inputs, scores = self.attention_layer(
+            inputs,
+            inputs,
+            return_attention_scores=True,
+            attention_mask=attention_mask,
+            training=training)
         inputs = self.dropout1(inputs, training=training)
         inputs = inputs + residual
         if self.attention_norm_type == "postnorm":
@@ -235,24 +241,28 @@ class MaskedEncoder(tf.keras.layers.Layer):
                 commitment_cost=commitment_cost,
                 sample_codebook_temperature=sample_codebook_temperature
             )
-        self.mask_samples = 5
+        else:
+            self.dense = tf.keras.layers.Dense(embedding_dim)
+
         self.num_negative_samples = 100
+        self.mask_rate = 0.065
+        self.mask_embedding = self.add_weight(
+            name="mask_embedding",
+            shape=(embedding_dim,),
+            dtype=tf.float32,
+            initializer=tf.initializers.random_normal(),
+            trainable=True)
 
     def apply_mask(self, inputs):
-        mask_indices = tf.random.uniform((self.batch_size, self.mask_samples,), minval=0, maxval=self.patch_length, dtype=tf.int32)
-        mask = tf.one_hot(mask_indices, self.patch_length)
-        mask = tf.reduce_sum(mask, axis=1)
-        mask = tf.clip_by_value(mask, 0, 1)
-        mask = tf.cast(mask, dtype=tf.bool)
-        mask_vector = tf.random.uniform(tf.shape(inputs), minval=0, maxval=1, dtype=tf.float32)
-        inputs = tf.where(tf.expand_dims(mask, axis=-1), mask_vector, inputs)
+        mask = tf.random.uniform((self.batch_size, tf.shape(inputs)[-2],), minval=0, maxval=1, dtype=tf.float32) <= self.mask_rate
+        inputs = tf.where(tf.expand_dims(mask, axis=-1), self.mask_embedding, inputs)
         return inputs, mask
 
     def call(self, inputs, attention_mask=None, training=False, add_loss=True):
         if self.use_quantizer:
             quantized = self.residual_vq(inputs, training=training)
         else:
-            quantized = inputs
+            quantized = self.dense(inputs)
             
         if add_loss:
             inputs, mask = self.apply_mask(inputs)
@@ -265,31 +275,23 @@ class MaskedEncoder(tf.keras.layers.Layer):
             attention_scores.append(scores)
 
         if add_loss:
-            loss = self.contrastive_loss(mask, inputs, quantized)
-            self.add_loss(loss)
-            self.add_metric(loss, name="context")
+            contrastive_loss = self.contrastive_loss(mask, inputs, quantized)
+            self.add_loss(contrastive_loss * 0.002)
+            self.add_metric(contrastive_loss, name="context")
         return inputs, attention_scores
     
     def contrastive_loss(self, mask, context, quantized):
-        loss = []
-        for batch_index in range(self.batch_size):
-            mask_indices = tf.where(mask[batch_index])
-            c_t = tf.gather_nd(context[batch_index], mask_indices)
-            q_t = tf.gather_nd(quantized[batch_index], mask_indices)
-            pos_similarity = cosine_similarity(c_t, q_t)
+        mask_indices = tf.where(mask)
+        c_t = tf.gather_nd(context, mask_indices)
+        q_t = tf.gather_nd(quantized, mask_indices)
+        pos_similarity = cosine_similarity(c_t, q_t)
 
-            # negative_samples = tf.boolean_mask(quantized, tf.range(self.batch_size) != batch_index, axis=0)
-            # flat_negative_samples = tf.reshape(negative_samples, [-1, tf.shape(negative_samples)[-1]])
-            # target_indices = tf.random.shuffle(tf.range(tf.shape(flat_negative_samples)[0]))[:self.num_negative_samples]
-            # targets = tf.gather(flat_negative_samples, target_indices)
-            targets = tf.gather_nd(quantized[batch_index], tf.where(tf.logical_not(mask[batch_index])))
+        neg_similarity = cosine_similarity_matmul(c_t, q_t)
+        neg_similarity_mask = tf.linalg.diag(tf.ones(tf.shape(neg_similarity)[-1]))
 
-            neg_similarity = cosine_similarity_matmul(c_t, targets)
-
-            numerator = tf.exp(pos_similarity / self.temperature)
-            denominator = tf.reduce_sum(tf.exp(neg_similarity / self.temperature), axis=-1)
-            loss_m = -tf.math.log(numerator / denominator)
-            loss.append(tf.reduce_mean(loss_m))
+        numerator = tf.exp(pos_similarity / self.temperature)
+        denominator = tf.reduce_sum(tf.exp(neg_similarity / self.temperature) * (1 - neg_similarity_mask), axis=-1)
+        loss = -tf.math.log(numerator / denominator)
         
         return tf.reduce_mean(loss)
 

@@ -2,8 +2,8 @@ import tensorflow as tf
 import numpy as np
 
 from config import MusicRVQEncoderConfig
-from encoder import MaskedEncoder
 from feature_extractor import FeatureExtractorLayer
+from decoder import DecoderLayer
 
 
 class MixStripes(tf.keras.layers.Layer):
@@ -149,40 +149,41 @@ class MusicRVQEncoder(tf.keras.Model):
             )
             for i in range(len(config.filter_sizes))
         ]
-
-        self.masked_encoder = MaskedEncoder(
-            hidden_size=config.hidden_size,
-            num_heads=config.num_heads,
-            num_layers=config.num_layers,
-            intermediate_size=config.intermediate_size,
-            batch_size=batch_size,
-            patch_length=self.seq_len // np.prod(config.strides),
-            codebook_size=config.codebook_size,
-            embedding_dim=config.embedding_dim,
-            num_quantizers=config.num_quantizers,
-            ema_decay=config.ema_decay,
-            commitment_cost=config.commitment_cost,
-            threshold_ema_dead_code=config.threshold_ema_dead_code,
-            sample_codebook_temperature=config.sample_codebook_temperature,
-            dropout=config.dropout,
-            layer_norm_eps=config.layer_norm_eps,
-            is_gelu_approx=config.is_gelu_approx,
-            attention_norm_type=config.attention_norm_type,
-            temperature=config.temperature,
-            use_quantizer=config.use_quantizer
-        )
+        self.decoder_layers = [
+            DecoderLayer(
+                filter_sizes=config.filter_sizes,
+                kernel_sizes=config.kernel_sizes,
+                strides=config.strides,
+                is_gelu_approx=config.is_gelu_approx,
+                layer_id=i
+            )
+            for i in range(len(config.filter_sizes))
+        ]
+        self.spec_augment = SpecMixAugmentation(3, 3, 0, 0, batch_size, self.seq_len)
+        self.output_layer = tf.keras.layers.Dense(252 * 2)
 
     def call(self, inputs, attention_mask=None, training=False, return_attention_scores=False, add_loss=True):
         inputs = tf.transpose(inputs, (0, 1, 3, 2))
         inputs = tf.reshape(inputs, (self.batch_size, -1, 252 * 2))
 
+        attention_scores = []
+        inputs = self.spec_augment(inputs, training=training)
         for feature_extractor_layer in self.feature_extract_layers:
-            inputs = feature_extractor_layer(inputs, training=training)
+            inputs, scores = feature_extractor_layer(inputs, training=training, return_attention_scores=True)
+            attention_scores.append(scores)
 
-        outputs, attention_scores = self.masked_encoder(inputs, training=training, add_loss=add_loss)
+        feature = inputs
+        
+        for decoder_layer in self.decoder_layers:
+            inputs = decoder_layer(inputs, training=training)
+
+        outputs = self.output_layer(inputs)
+        outputs = tf.reshape(outputs, (self.batch_size, -1, 2, 252))
+        outputs = tf.transpose(outputs, (0, 1, 3, 2))
+        outputs = tf.keras.activations.relu(outputs)
 
         if return_attention_scores:
-            return outputs, attention_scores
+            return outputs, feature, attention_scores
 
         return outputs
     

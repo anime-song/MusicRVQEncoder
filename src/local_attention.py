@@ -120,6 +120,7 @@ class MultiHeadWindowAttention(tf.keras.layers.Layer):
 
         query, attention_weights = self.attention(query, key, value, mask=mask, training=training)
         query = tf.reshape(query, (batch_size, -1, self.d_model))
+        attention_weights = tf.transpose(attention_weights, perm=[0, 2, 1, 3])
 
         query = self.dropout(self.dense(query), training=training)
         return query, attention_weights
@@ -171,12 +172,12 @@ class LocalAttentionTransformer(tf.keras.layers.Layer):
         self.dropout1 = tf.keras.layers.Dropout(rate)
         self.dropout2 = tf.keras.layers.Dropout(rate)
 
-    def call(self, inputs, mask=None, training=False):
+    def call(self, inputs, mask=None, training=False, return_attention_scores=False):
         residual = inputs
         b2_connection = inputs
         if self.attention_norm_type == "prenorm":
             inputs = self.layernorm1(inputs)
-        inputs, _ = self.attention_layer(inputs, inputs, training=training)
+        inputs, attention_scores = self.attention_layer(inputs, inputs, training=training)
         inputs = self.dropout1(inputs, training=training)
         inputs = inputs + residual
         if self.attention_norm_type == "postnorm":
@@ -193,6 +194,9 @@ class LocalAttentionTransformer(tf.keras.layers.Layer):
         inputs = inputs + residual + b2_connection
         if self.attention_norm_type == "postnorm":
             inputs = self.layernorm2(inputs)
+
+        if return_attention_scores:
+            return inputs, attention_scores
 
         return inputs
     

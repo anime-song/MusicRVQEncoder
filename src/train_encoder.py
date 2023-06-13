@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+from tensorflow_addons.optimizers import RectifiedAdam
 from gradient_accumulator import GradientAccumulateModel
 
 from model import MusicRVQEncoder
@@ -68,7 +69,7 @@ if __name__ == "__main__":
     # GPUメモリ制限
     allocate_gpu_memory()
 
-    model_name = "music_rvq_encoder"
+    model_name = "music_encoder"
 
     epochs = 100
     batch_size = 8
@@ -77,7 +78,7 @@ if __name__ == "__main__":
     cache_size = 100
     initial_epoch = 0
     initial_value_loss = None
-    log_dir = "./logs/music_rvq_encoder"
+    log_dir = "./logs/music_encoder"
 
     x_train, x_test = load_from_npz()
     monitor = 'val_loss'
@@ -89,7 +90,7 @@ if __name__ == "__main__":
     model = tf.keras.Model(inputs=[model_input], outputs=music_rvq_ae_out)
 
     model = GradientAccumulateModel(accum_steps=accum_steps, inputs=model.inputs, outputs=model.outputs)
-    optimizer = tf.keras.optimizers.Adam()
+    optimizer = RectifiedAdam()
 
     model.compile(optimizer)
     model.summary()
@@ -114,7 +115,7 @@ if __name__ == "__main__":
         log_dir=log_dir, histogram_freq=1)
 
     ckpt_callback_best = tf.keras.callbacks.ModelCheckpoint(
-        filepath="./model/{}.ckpt".format(model_name),
+        filepath="./model/music_encoder/{}.ckpt".format(model_name),
         monitor=monitor,
         verbose=1,
         save_best_only=True,
@@ -123,7 +124,7 @@ if __name__ == "__main__":
     )
     
     lrs = WarmupCosineDecay(
-        len(train_gen) * epochs, warmup_steps=len(train_gen) * epochs * 0.2, target_lr=1e-4, global_steps=len(train_gen) * initial_epoch)
+        len(train_gen) * epochs, warmup_steps=len(train_gen) * epochs * 0.2, target_lr=1e-3, global_steps=len(train_gen) * initial_epoch)
 
     callbacks = [
         ckpt_callback_best,

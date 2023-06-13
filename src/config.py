@@ -24,13 +24,13 @@ class MusicRVQEncoderConfig:
     num_layers: int = 6
 
     # quantizer
-    use_quantizer = True
+    use_quantizer = False
     embedding_dim: int = 504
-    codebook_size: int = 512
+    codebook_size: int = 1024
     commitment_cost: float = 0.0
     num_quantizers: int = 8
     ema_decay: float = 0.99
     threshold_ema_dead_code: int = 2
 
     temperature = 0.1
-    sample_codebook_temperature: float = 0.1
+    sample_codebook_temperature: float = 2.0

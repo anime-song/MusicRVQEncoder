@@ -4,28 +4,44 @@ import tensorflow as tf
 class GumbelSoftmaxLayer(tf.keras.layers.Layer):
     def __init__(
             self,
-            temperature=1.0,
+            initial_temperature=2.0,
+            anneal_factor=0.999995,
+            min_temperature=0.5,
             **kwargs):
         super(GumbelSoftmaxLayer, self).__init__(**kwargs)
-        self.temperature = temperature
+        self.initial_temperature = initial_temperature
+        self.anneal_factor = anneal_factor
+        self.min_temperature = min_temperature
+
+    def build(self, input_shape):
+        self.temperature = tf.Variable(self.initial_temperature, dtype=tf.float32, trainable=False, name="temperature")
     
     def call(self, inputs, training=False):
-        indices = tf.argmax(inputs, axis=1)
-        encodings = tf.one_hot(indices, tf.shape(inputs)[1])
+        if self.temperature == 0 or not training:
+            indices = tf.argmax(inputs, axis=1)
+            encodings = tf.one_hot(indices, tf.shape(inputs)[1])
+            return indices, encodings
         
-        pi0 = tf.nn.softmax(inputs, axis=-1)
-        pi1 = (encodings + tf.nn.softmax((inputs / self.temperature), axis=-1)) / 2
-        pi1 = tf.nn.softmax(tf.stop_gradient(tf.math.log(pi1) - inputs), axis=1)
-        pi2 = 2 * pi1 - 0.5 * pi0
-        encodings = pi2 - tf.stop_gradient(pi2) + encodings
+        gumbel_noise = tf.random.uniform(shape=tf.shape(inputs), minval=0, maxval=1, dtype=tf.float32)
+        gumbel_noise = -tf.math.log(-tf.math.log(gumbel_noise))
 
-        return indices, encodings
+        outputs = tf.argmax(tf.nn.softmax((inputs + gumbel_noise) / self.temperature, axis=1), axis=1)
+        encodings = tf.one_hot(outputs, tf.shape(inputs)[1])
+        
+        self.update_temperature()
+        return outputs, encodings
+
+    def update_temperature(self):
+        new_temperature = tf.maximum(self.temperature * self.anneal_factor, self.min_temperature)
+        self.temperature.assign(new_temperature)
 
     def get_config(self):
         config = super().get_config()
         config.update(
             {
-                "temperature": self.temperature,
+                "initial_temperature": self.initial_temperature,
+                "anneal_factor": self.anneal_factor,
+                "min_temperature": self.min_temperature
             }
         )
         return config
@@ -58,7 +74,7 @@ class VectorQuantizer(tf.keras.layers.Layer):
         self.commitment_cost = commitment_cost
         self.threshold_ema_dead_code = threshold_ema_dead_code
 
-        self.gumbel_softmax = GumbelSoftmaxLayer(temperature=sample_codebook_temperature)
+        self.gumbel_softmax = GumbelSoftmaxLayer(initial_temperature=sample_codebook_temperature)
 
     def build(self, input_shape):
         self.embeddings = self.add_weight(

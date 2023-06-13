@@ -34,14 +34,14 @@ class FeatureExtractorLayer(tf.keras.layers.Layer):
         self.pos_embed = LocalPositonalEncoding(
             batch_size,
             conv_dim,
-            8
+            32
         )
 
         self.attention = LocalAttentionTransformer(
             conv_dim,
             num_heads,
             intermediate_size,
-            8,
+            32,
             batch_size,
             None,
             layer_norm_eps,
@@ -59,12 +59,16 @@ class FeatureExtractorLayer(tf.keras.layers.Layer):
             kernel_initializer="he_normal"
         )
 
-    def call(self, inputs, training=False):
+    def call(self, inputs, training=False, return_attention_scores=False):
         inputs = self.pos_embed(inputs, training=training)
-        inputs = self.attention(inputs, training=training)
+        inputs, scores = self.attention(inputs, training=training, return_attention_scores=True)
         
         inputs = self.conv_layer(inputs)
         inputs = tf.keras.activations.gelu(inputs, approximate=self.is_gelu_approx)
+
+        if return_attention_scores:
+            return inputs, scores
+
         return inputs
     
     def get_config(self):
